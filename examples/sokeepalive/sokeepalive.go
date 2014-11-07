@@ -1,9 +1,9 @@
 package main
 
 import (
-	"github.com/elazarl/goproxy"
-	"log"
 	"flag"
+	"github.com/marbemac/goproxy"
+	"log"
 	"net"
 	"net/http"
 )

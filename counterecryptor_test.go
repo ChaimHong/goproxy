@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"crypto/rsa"
 	"encoding/binary"
-	"github.com/elazarl/goproxy"
+	"github.com/marbemac/goproxy"
 	"io"
 	"math"
 	"math/rand"
