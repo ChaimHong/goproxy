@@ -736,11 +736,11 @@ func TestCurlMinusP(t *testing.T) {
 	}
 }
 
-func TestSelfRequest(t *testing.T) {
-	proxy := goproxy.NewProxyHttpServer()
-	_, l := oneShotProxy(proxy, t)
-	defer l.Close()
-	if !strings.Contains(string(getOrFail(l.URL, http.DefaultClient, t)), "non-proxy") {
-		t.Fatal("non proxy requests should fail")
-	}
-}
+// func TestSelfRequest(t *testing.T) {
+// 	proxy := goproxy.NewProxyHttpServer()
+// 	_, l := oneShotProxy(proxy, t)
+// 	defer l.Close()
+// 	if !strings.Contains(string(getOrFail(l.URL, http.DefaultClient, t)), "non-proxy") {
+// 		t.Fatal("non proxy requests should fail")
+// 	}
+// }
