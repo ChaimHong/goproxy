@@ -121,7 +121,7 @@ func SetupResponse(resp *http.Response, ctx *goproxy.ProxyCtx) *http.Response {
 
 func SaveStopLightRequest(resp *http.Response, ctx *goproxy.ProxyCtx) *http.Response {
 	baseRequest := requestData[ctx.Session]
-	if baseRequest == nil || baseRequest.Skip || baseRequest.GetApiId() == "" {
+	if baseRequest == nil || baseRequest.Skip || baseRequest.GetApi().Id == "" {
 		return resp
 	}
 
@@ -147,7 +147,7 @@ func SaveStopLightRequest(resp *http.Response, ctx *goproxy.ProxyCtx) *http.Resp
 
 		go func() {
 			// save the request
-			slrequest := models.NewRequest(baseRequest.GetApiId(), env, baseRequest.HttpRequest, baseRequest.GetBody(), resp, respBody)
+			slrequest := models.NewRequest(baseRequest.GetApi(), env, baseRequest.HttpRequest, baseRequest.GetBody(), resp, respBody)
 			result := dbConnection.Create(slrequest)
 			if result.Error != nil {
 				log.Println(result.Error)

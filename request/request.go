@@ -40,7 +40,7 @@ type Request interface {
 	DeleteUserData(key string)                  // Clean up user data set from previously SetUserData call
 	SetDb() *gorm.DB                            // Set the DB for use in this request
 	GetOrigin() *url.URL                        // The origin url (scheme + host + port), taking into account headers and environment
-	GetApiId() string                           // The api id associated with this request
+	GetApi() *models.Api                        // The api id associated with this request
 	GetEnvironment() *models.Environment        // The environment associated with this request
 }
 
@@ -81,7 +81,7 @@ type BaseRequest struct {
 	Attempts      []Attempt
 	Skip          bool
 	env           *models.Environment
-	apiId         string
+	api           *models.Api
 	userDataMutex *sync.RWMutex
 	userData      map[string]interface{}
 	dbConnection  *gorm.DB
@@ -199,24 +199,39 @@ func (br *BaseRequest) GetOrigin() (u *url.URL) {
 	return
 }
 
-// Get the api id first from the environment if found
+// Get the api first from the environment if found
 // second from the StopLight-Api header.
-func (br *BaseRequest) GetApiId() (id string) {
-	if br.apiId != "" {
-		id = br.apiId
-		return
+func (br *BaseRequest) GetApi() *models.Api {
+	if br.api != nil {
+		return br.api
 	}
+
+	identifier := ""
+	var api models.Api
 
 	env := br.GetEnvironment()
 	if env.ApiId != "" {
-		id = env.ApiId
+		identifier = env.ApiId
 	} else {
-		id = br.HttpRequest.Header.Get("X-StopLight-Api")
+		identifier = br.HttpRequest.Header.Get("X-StopLight-Api")
 	}
 
-	br.apiId = id
+	if identifier != "" {
+		existing, ok := cache.Get(identifier)
+		if ok == true {
+			api = existing.(models.Api)
+		} else {
+			result := br.dbConnection.Where("id = ?", identifier, true).First(&api)
 
-	return
+			cache.Add(identifier, api)
+			if result.Error != nil {
+				// TODO: Inform the user somehow..
+				// log.Println("Could not find api.")
+			}
+		}
+	}
+
+	return &api
 }
 
 func (br *BaseRequest) GetEnvironment() *models.Environment {
