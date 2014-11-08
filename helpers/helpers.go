@@ -145,6 +145,11 @@ func SaveStopLightRequest(resp *http.Response, ctx *goproxy.ProxyCtx) *http.Resp
 		// Copy it back to the response body to return to the client
 		resp.Body = ioutil.NopCloser(bytes.NewBuffer(respBody))
 
+		isDashboardRequest := false
+		if ctx.Req.Header.Get("X-StopLight-Dashboard") == "true" {
+			isDashboardRequest = true
+		}
+
 		go func() {
 			// save the request
 			slrequest := models.NewRequest(baseRequest.GetApi(), env, baseRequest.HttpRequest, baseRequest.GetBody(), resp, respBody)
@@ -155,7 +160,11 @@ func SaveStopLightRequest(resp *http.Response, ctx *goproxy.ProxyCtx) *http.Resp
 			}
 
 			// send the data down to the client
-			sockets.WebSocketHub.BroadcastEvent("request.create", "request", slrequest)
+			sockets.WebSocketHub.BroadcastEvent("request.create", &models.RequestSocketPayload{
+				Model:         "request",
+				Data:          slrequest,
+				FromDashboard: isDashboardRequest,
+			})
 		}()
 	}
 
@@ -166,6 +175,7 @@ func Cleanup(resp *http.Response, ctx *goproxy.ProxyCtx) *http.Response {
 	// Clean the stoplight headers
 	ctx.Req.Header.Del("X-StopLight-Url-Host")
 	ctx.Req.Header.Del("X-StopLight-Api")
+	ctx.Req.Header.Del("X-StopLight-Dashboard")
 
 	// Clean up the session data
 	delete(requestData, ctx.Session)
@@ -196,6 +206,7 @@ func urlWithoutEnvironment(env *models.Environment, url string) (newUrl string) 
 // No response or response body, but is not a get request
 // Response is not 2xx series
 // X-StopLight-Ignore header is not true
+// X-StopLight-Dashboard header is true
 func isValidResponse(req *http.Request, resp *http.Response) (valid bool) {
 	if req.Header.Get("X-StopLight-Ignore") == "true" {
 		return
@@ -208,7 +219,7 @@ func isValidResponse(req *http.Request, resp *http.Response) (valid bool) {
 		isAjax := req.Header.Get("X-Requested-With")
 		contentType := resp.Header.Get("Content-Type")
 		isGet := req.Method == "GET"
-		isStopLightRequest := req.Header.Get("X-StopLight-Api")
+		isStopLightRequest := req.Header.Get("X-StopLight-Dashboard")
 
 		validStatusCode := resp.StatusCode == 304 || string(strconv.Itoa(resp.StatusCode)[0]) == "2"
 		valid = isStopLightRequest != "" || !isGet || isAjax != "" || !validStatusCode || strings.Contains(contentType, "json") || strings.Contains(contentType, "xml")
