@@ -8,7 +8,7 @@ import (
 	"io/ioutil"
 	"log"
 	"net/http"
-	// "net/url"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -38,8 +38,10 @@ type Request interface {
 	SetUserData(key string, baton interface{})  // Provide storage space for data that survives with the request
 	GetUserData(key string) (interface{}, bool) // Fetch user data set from previously SetUserData call
 	DeleteUserData(key string)                  // Clean up user data set from previously SetUserData call
-	SetDb() *gorm.DB
-	GetEnvironment() *models.Environment
+	SetDb() *gorm.DB                            // Set the DB for use in this request
+	GetOrigin() *url.URL                        // The origin url (scheme + host + port), taking into account headers and environment
+	GetApiId() string                           // The api id associated with this request
+	GetEnvironment() *models.Environment        // The environment associated with this request
 }
 
 type Attempt interface {
@@ -79,6 +81,7 @@ type BaseRequest struct {
 	Attempts      []Attempt
 	Skip          bool
 	env           *models.Environment
+	apiId         string
 	userDataMutex *sync.RWMutex
 	userData      map[string]interface{}
 	dbConnection  *gorm.DB
@@ -171,6 +174,49 @@ func (br *BaseRequest) DeleteUserData(key string) {
 
 func (br *BaseRequest) SetDb(db *gorm.DB) {
 	br.dbConnection = db
+}
+
+func (br *BaseRequest) GetOrigin() (u *url.URL) {
+	// First check the header
+	targetUrl := br.HttpRequest.Header.Get("X-StopLight-Url-Host")
+	if targetUrl == "" {
+		// else check the environment
+		env := br.GetEnvironment()
+		if env.Slug == "" {
+			u = br.HttpRequest.URL
+			return u
+		}
+
+		if env.Ssl {
+			targetUrl = "https://" + env.Url
+		} else {
+			targetUrl = "http://" + env.Url
+		}
+	}
+
+	u, _ = url.Parse(targetUrl)
+
+	return
+}
+
+// Get the api id first from the environment if found
+// second from the StopLight-Api header.
+func (br *BaseRequest) GetApiId() (id string) {
+	if br.apiId != "" {
+		id = br.apiId
+		return
+	}
+
+	env := br.GetEnvironment()
+	if env.ApiId != "" {
+		id = env.ApiId
+	} else {
+		id = br.HttpRequest.Header.Get("X-StopLight-Api")
+	}
+
+	br.apiId = id
+
+	return
 }
 
 func (br *BaseRequest) GetEnvironment() *models.Environment {

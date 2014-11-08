@@ -5,7 +5,6 @@ import (
 	"io/ioutil"
 	"log"
 	"net/http"
-	"net/url"
 	"strconv"
 	"strings"
 
@@ -72,58 +71,64 @@ func PreflightCorsSupport(r *http.Request, ctx *goproxy.ProxyCtx) (*http.Request
 }
 
 func CleanRequest(r *http.Request, ctx *goproxy.ProxyCtx) (*http.Request, *http.Response) {
-	// Skip if no environment found
 	env := requestData[ctx.Session].GetEnvironment()
-	if env.Slug == "" {
-		return r, nil
-	}
 
-	var targetUrl string
-	if env.Ssl {
-		targetUrl = "https://" + env.Url
-	} else {
-		targetUrl = "http://" + env.Url
-	}
-
-	url, err := url.Parse(targetUrl)
-	if err != nil {
-	}
-
+	// Clean URL
+	u := requestData[ctx.Session].GetOrigin()
 	r.RequestURI = ""
-	r.URL.Scheme = url.Scheme
-	r.URL.Host = url.Host
-	r.Host = url.Host
+	r.URL.Scheme = u.Scheme
+	r.URL.Host = u.Host
+	r.Host = u.Host
 	r.URL.Path = urlWithoutEnvironment(env, r.URL.Path)
-	r.Header.Add("StopLight-Request", "true")
-	r.Header.Add("Host", r.URL.Host)
 
 	return r, nil
 }
 
 func PostflightCorsSupport(resp *http.Response, ctx *goproxy.ProxyCtx) *http.Response {
 	// Skip if no environment found, or no response
-	if requestData[ctx.Session].Skip || requestData[ctx.Session].GetEnvironment().Slug == "" || resp == nil {
+	data := requestData[ctx.Session]
+	if resp == nil || data == nil || data.GetEnvironment().Slug == "" {
 		return resp
 	}
 
 	resp.Header.Set("Access-Control-Allow-Credentials", "true")
 	resp.Header.Set("Access-Control-Allow-Headers", ctx.Req.Header.Get("Access-Control-Request-Headers"))
-	resp.Header.Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS, DELETE, PUT, PATCH")
+	resp.Header.Set("Access-Control-Allow-Methods", allowedCorsMethods)
 	resp.Header.Set("Access-Control-Allow-Origin", "*")
 	return resp
 }
 
-func SaveStopLightRequest(resp *http.Response, ctx *goproxy.ProxyCtx) *http.Response {
-	// Get the current data, and then delete the saved request data
-	baseRequest := requestData[ctx.Session]
-	if baseRequest.Skip {
+func SetupResponse(resp *http.Response, ctx *goproxy.ProxyCtx) *http.Response {
+	data := requestData[ctx.Session]
+	if resp == nil || data == nil || data.Skip {
 		return resp
 	}
-	defer delete(requestData, ctx.Session)
+
+	// Set X-Forwarded-For, either appending to an existing entry, or creating a new one.
+	xff := resp.Header.Get("X-Forwarded-For")
+	if xff != "" {
+		xff += ", " + ctx.Req.RemoteAddr
+	} else {
+		xff = ctx.Req.RemoteAddr
+	}
+	resp.Header.Set("X-Forwarded-For", xff)
+
+	// Add stoplight headers
+	resp.Header.Set("X-StopLight-Request", "true")
+
+	return resp
+}
+
+func SaveStopLightRequest(resp *http.Response, ctx *goproxy.ProxyCtx) *http.Response {
+	baseRequest := requestData[ctx.Session]
+	if baseRequest == nil || baseRequest.Skip || baseRequest.GetApiId() == "" {
+		return resp
+	}
 
 	valid := isValidResponse(baseRequest.HttpRequest, resp)
+
 	env := baseRequest.GetEnvironment()
-	if valid && env.Slug != "" {
+	if valid {
 
 		// If no response, create a dummy one
 		if resp == nil {
@@ -142,7 +147,7 @@ func SaveStopLightRequest(resp *http.Response, ctx *goproxy.ProxyCtx) *http.Resp
 
 		go func() {
 			// save the request
-			slrequest := models.NewRequest(env, baseRequest.HttpRequest, baseRequest.GetBody(), resp, respBody)
+			slrequest := models.NewRequest(baseRequest.GetApiId(), env, baseRequest.HttpRequest, baseRequest.GetBody(), resp, respBody)
 			result := dbConnection.Create(slrequest)
 			if result.Error != nil {
 				log.Println(result.Error)
@@ -153,6 +158,17 @@ func SaveStopLightRequest(resp *http.Response, ctx *goproxy.ProxyCtx) *http.Resp
 			sockets.WebSocketHub.BroadcastEvent("request.create", "request", slrequest)
 		}()
 	}
+
+	return resp
+}
+
+func Cleanup(resp *http.Response, ctx *goproxy.ProxyCtx) *http.Response {
+	// Clean the stoplight headers
+	ctx.Req.Header.Del("X-StopLight-Url-Host")
+	ctx.Req.Header.Del("X-StopLight-Api")
+
+	// Clean up the session data
+	delete(requestData, ctx.Session)
 
 	return resp
 }
@@ -179,9 +195,9 @@ func urlWithoutEnvironment(env *models.Environment, url string) (newUrl string) 
 // Is not a get request
 // No response or response body, but is not a get request
 // Response is not 2xx series
-// StopLight-Ignore header is not true
+// X-StopLight-Ignore header is not true
 func isValidResponse(req *http.Request, resp *http.Response) (valid bool) {
-	if req.Header.Get("StopLight-Ignore") == "true" {
+	if req.Header.Get("X-StopLight-Ignore") == "true" {
 		return
 	}
 
@@ -192,8 +208,10 @@ func isValidResponse(req *http.Request, resp *http.Response) (valid bool) {
 		isAjax := req.Header.Get("X-Requested-With")
 		contentType := resp.Header.Get("Content-Type")
 		isGet := req.Method == "GET"
+		isStopLightRequest := req.Header.Get("X-StopLight-Api")
+
 		validStatusCode := resp.StatusCode == 304 || string(strconv.Itoa(resp.StatusCode)[0]) == "2"
-		valid = !isGet || isAjax != "" || !validStatusCode || strings.Contains(contentType, "json") || strings.Contains(contentType, "xml")
+		valid = isStopLightRequest != "" || !isGet || isAjax != "" || !validStatusCode || strings.Contains(contentType, "json") || strings.Contains(contentType, "xml")
 	}
 
 	return
