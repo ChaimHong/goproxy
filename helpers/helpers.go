@@ -11,9 +11,9 @@ import (
 	"github.com/marbemac/goproxy"
 	"github.com/marbemac/goproxy/request"
 
-	"github.com/marbemac/stoplight/db"
-	"github.com/marbemac/stoplight/models"
-	"github.com/marbemac/stoplight/sockets"
+	"github.com/marbemac/stoplight/core/db"
+	"github.com/marbemac/stoplight/core/models"
+	"github.com/marbemac/stoplight/core/sockets"
 
 	"github.com/jinzhu/gorm"
 )
@@ -121,15 +121,9 @@ func SetupResponse(resp *http.Response, ctx *goproxy.ProxyCtx) *http.Response {
 
 func SaveStopLightRequest(resp *http.Response, ctx *goproxy.ProxyCtx) *http.Response {
 	baseRequest := requestData[ctx.Session]
-	if baseRequest == nil || baseRequest.Skip || baseRequest.GetApi().Id == "" {
-		return resp
-	}
+	valid := isValidResponse(baseRequest, resp)
 
-	valid := isValidResponse(baseRequest.HttpRequest, resp)
-
-	env := baseRequest.GetEnvironment()
 	if valid {
-
 		// If no response, create a dummy one
 		if resp == nil {
 			resp = goproxy.NewResponse(ctx.Req, goproxy.ContentTypeText, http.StatusServiceUnavailable, "Service not available. Is the server running?")
@@ -145,14 +139,31 @@ func SaveStopLightRequest(resp *http.Response, ctx *goproxy.ProxyCtx) *http.Resp
 		// Copy it back to the response body to return to the client
 		resp.Body = ioutil.NopCloser(bytes.NewBuffer(respBody))
 
+		// Use the stoplight headers here, before the go routine below.
+		// This is because these headers are deleted in the the "Cleanup"
+		// Middleware, which makes them unavailable in the go routine.
+		noContext := baseRequest.ReqHeaders.Get("X-StopLight-No-Context")
 		isDashboardRequest := false
-		if ctx.Req.Header.Get("X-StopLight-Dashboard") == "true" {
+		if baseRequest.ReqHeaders.Get("X-StopLight-Dashboard") == "true" {
 			isDashboardRequest = true
 		}
 
 		go func() {
+			user := baseRequest.GetUser()
+			var api *models.Api
+			var env *models.Environment
+
+			// This header indicates wether or not we are saving api/env context with this request.
+			if noContext == "true" {
+				api = &models.Api{}
+				env = &models.Environment{}
+			} else {
+				api = baseRequest.GetApi()
+				env = baseRequest.GetEnvironment()
+			}
+
 			// save the request
-			slrequest := models.NewRequest(baseRequest.GetApi(), env, baseRequest.HttpRequest, baseRequest.GetBody(), resp, respBody)
+			slrequest := models.NewRequest(user, api, env, baseRequest.HttpRequest, baseRequest.GetBody(), resp, respBody)
 			result := dbConnection.Create(slrequest)
 			if result.Error != nil {
 				log.Println(result.Error)
@@ -173,9 +184,11 @@ func SaveStopLightRequest(resp *http.Response, ctx *goproxy.ProxyCtx) *http.Resp
 
 func Cleanup(resp *http.Response, ctx *goproxy.ProxyCtx) *http.Response {
 	// Clean the stoplight headers
-	ctx.Req.Header.Del("X-StopLight-Url-Host")
-	ctx.Req.Header.Del("X-StopLight-Api")
 	ctx.Req.Header.Del("X-StopLight-Dashboard")
+	ctx.Req.Header.Del("X-StopLight-Api")
+	ctx.Req.Header.Del("X-StopLight-Url-Host")
+	ctx.Req.Header.Del("X-StopLight-No-Context")
+	ctx.Req.Header.Del("X-StopLight-Authorization")
 
 	// Clean up the session data
 	delete(requestData, ctx.Session)
@@ -207,22 +220,30 @@ func urlWithoutEnvironment(env *models.Environment, url string) (newUrl string) 
 // Response is not 2xx series
 // X-StopLight-Ignore header is not true
 // X-StopLight-Dashboard header is true
-func isValidResponse(req *http.Request, resp *http.Response) (valid bool) {
-	if req.Header.Get("X-StopLight-Ignore") == "true" {
+func isValidResponse(baseRequest *request.BaseRequest, resp *http.Response) (valid bool) {
+	if baseRequest == nil || baseRequest.Skip || baseRequest.HttpRequest.Header.Get("X-StopLight-Ignore") == "true" {
 		return
 	}
 
-	// nil response usually means 500
-	if resp == nil {
+	isStopLightRequest := baseRequest.HttpRequest.Header.Get("X-StopLight-Dashboard")
+	api := baseRequest.GetApi()
+	if isStopLightRequest == "true" { // always save requests from the stoplight dashboard
 		valid = true
-	} else {
-		isAjax := req.Header.Get("X-Requested-With")
-		contentType := resp.Header.Get("Content-Type")
-		isGet := req.Method == "GET"
-		isStopLightRequest := req.Header.Get("X-StopLight-Dashboard")
+	} else if api.Id != "" { // if we've identified an API this request belongs to, let's see if its a valid request
+		if resp == nil { // nil response usually means 500
+			valid = true
+		} else {
+			req := baseRequest.HttpRequest
+			isAjax := req.Header.Get("X-Requested-With")
+			acceptType := req.Header.Get("Accept")
+			contentType := resp.Header.Get("Content-Type")
+			typeString := acceptType + contentType
+			isGet := req.Method == "GET"
 
-		validStatusCode := resp.StatusCode == 304 || string(strconv.Itoa(resp.StatusCode)[0]) == "2"
-		valid = isStopLightRequest != "" || !isGet || isAjax != "" || !validStatusCode || strings.Contains(contentType, "json") || strings.Contains(contentType, "xml")
+			log.Println(isAjax)
+			validStatusCode := resp.StatusCode == 304 || string(strconv.Itoa(resp.StatusCode)[0]) == "2"
+			valid = !isGet || isAjax != "" || !validStatusCode || ((strings.Contains(typeString, "json") || strings.Contains(typeString, "xml")) && !strings.Contains(typeString, "html"))
+		}
 	}
 
 	return

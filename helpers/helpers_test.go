@@ -3,7 +3,7 @@ package helpers
 import (
 	"testing"
 
-	"github.com/marbemac/stoplight/models"
+	"github.com/marbemac/stoplight/core/models"
 	"github.com/stretchr/testify/assert"
 )
 

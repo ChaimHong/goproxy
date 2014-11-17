@@ -13,7 +13,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/marbemac/stoplight/models"
+	"github.com/marbemac/stoplight/core/models"
+	"github.com/marbemac/stoplight/core/netutils"
+	"github.com/marbemac/stoplight/core/routers"
 
 	"github.com/hashicorp/golang-lru"
 	"github.com/jinzhu/gorm"
@@ -76,20 +78,26 @@ func (ba *BaseAttempt) GetDuration() time.Duration {
 
 type BaseRequest struct {
 	HttpRequest   *http.Request
+	ReqHeaders    http.Header
 	Id            int64
 	Body          []byte
 	Attempts      []Attempt
 	Skip          bool
 	env           *models.Environment
 	api           *models.Api
+	user          *models.User
 	userDataMutex *sync.RWMutex
 	userData      map[string]interface{}
 	dbConnection  *gorm.DB
 }
 
 func NewBaseRequest(r *http.Request, id int64) *BaseRequest {
+	var header = make(http.Header)
+	netutils.CopyHeaders(header, r.Header)
+
 	br := &BaseRequest{
 		HttpRequest:   r,
+		ReqHeaders:    header,
 		Id:            id,
 		Skip:          false,
 		userDataMutex: &sync.RWMutex{},
@@ -178,7 +186,7 @@ func (br *BaseRequest) SetDb(db *gorm.DB) {
 
 func (br *BaseRequest) GetOrigin() (u *url.URL) {
 	// First check the header
-	targetUrl := br.HttpRequest.Header.Get("X-StopLight-Url-Host")
+	targetUrl := br.ReqHeaders.Get("X-StopLight-Url-Host")
 	if targetUrl == "" {
 		// else check the environment
 		env := br.GetEnvironment()
@@ -199,21 +207,29 @@ func (br *BaseRequest) GetOrigin() (u *url.URL) {
 	return
 }
 
-// Get the api first from the environment if found
-// second from the StopLight-Api header.
+// Fetch and set the current user for the request
+func (br *BaseRequest) GetUser() *models.User {
+	if br.user == nil {
+		header := br.ReqHeaders.Get("X-StopLight-Authorization")
+		br.user = routers.CurrentUser(header, br.dbConnection)
+	}
+
+	return br.user
+}
+
+// Get the api first from the StopLight-Api header
+// second from the environment if found.
 func (br *BaseRequest) GetApi() *models.Api {
 	if br.api != nil {
 		return br.api
 	}
 
-	identifier := ""
+	identifier := br.ReqHeaders.Get("X-StopLight-Api")
 	var api models.Api
 
-	env := br.GetEnvironment()
-	if env.ApiId != "" {
+	if identifier == "" {
+		env := br.GetEnvironment()
 		identifier = env.ApiId
-	} else {
-		identifier = br.HttpRequest.Header.Get("X-StopLight-Api")
 	}
 
 	if identifier != "" {
@@ -252,39 +268,42 @@ func (br *BaseRequest) GetEnvironment() *models.Environment {
 // HELPERS //
 /////////////
 
+// NOTE: Disabled the cache in the two functions below because when the user changes
+// the environment state from running -> not running, cache is not busted.
+
 func (br *BaseRequest) requestEnvFromPath() (env models.Environment) {
 	identifier := slugFromUrl(br.HttpRequest.URL.RequestURI())
-	existing, ok := cache.Get(identifier)
-	if ok == true {
-		env = existing.(models.Environment)
-	} else {
-		result := br.dbConnection.Where("slug = ? AND running = ?", identifier, true).First(&env)
+	// existing, ok := cache.Get(identifier)
+	// if ok == true {
+	// 	env = existing.(models.Environment)
+	// } else {
+	result := br.dbConnection.Where("slug = ? AND running = ?", identifier, true).First(&env)
 
-		cache.Add(identifier, env)
-		if result.Error != nil {
-			// TODO: Inform the user somehow..
-			// log.Println("Could not find environment.")
-			return
-		}
+	// cache.Add(identifier, env)
+	if result.Error != nil {
+		// TODO: Inform the user somehow..
+		// log.Println("Could not find environment.")
+		return
 	}
+	// }
 	return
 }
 
 func (br *BaseRequest) requestEnvFromHost() (env models.Environment) {
 	identifier := br.HttpRequest.URL.Host
-	existing, ok := cache.Get(identifier)
-	if ok == true {
-		env = existing.(models.Environment)
-	} else {
-		result := br.dbConnection.Where("url = ? AND running = ?", identifier, true).First(&env)
+	// existing, ok := cache.Get(identifier)
+	// if ok == true {
+	// 	env = existing.(models.Environment)
+	// } else {
+	result := br.dbConnection.Where("url = ? AND running = ?", identifier, true).First(&env)
 
-		cache.Add(identifier, env)
-		if result.Error != nil {
-			// TODO: Inform the user somehow..
-			// log.Println("Could not find environment.")
-			return
-		}
+	// cache.Add(identifier, env)
+	if result.Error != nil {
+		// TODO: Inform the user somehow..
+		// log.Println("Could not find environment.")
+		return
 	}
+	// }
 	return
 }
 
