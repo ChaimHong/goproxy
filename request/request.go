@@ -42,7 +42,7 @@ type Request interface {
 	DeleteUserData(key string)                  // Clean up user data set from previously SetUserData call
 	SetDb() *gorm.DB                            // Set the DB for use in this request
 	GetOrigin() *url.URL                        // The origin url (scheme + host + port), taking into account headers and environment
-	GetApi() *models.Api                        // The api id associated with this request
+	GetProject() *models.Project                // The project id associated with this request
 	GetEnvironment() *models.Environment        // The environment associated with this request
 }
 
@@ -84,7 +84,7 @@ type BaseRequest struct {
 	Attempts      []Attempt
 	Skip          bool
 	env           *models.Environment
-	api           *models.Api
+	project       *models.Project
 	user          *models.User
 	userDataMutex *sync.RWMutex
 	userData      map[string]interface{}
@@ -217,37 +217,37 @@ func (br *BaseRequest) GetUser() *models.User {
 	return br.user
 }
 
-// Get the api first from the StopLight-Api header
+// Get the project first from the StopLight-Project header
 // second from the environment if found.
-func (br *BaseRequest) GetApi() *models.Api {
-	if br.api != nil {
-		return br.api
+func (br *BaseRequest) GetProject() *models.Project {
+	if br.project != nil {
+		return br.project
 	}
 
-	identifier := br.ReqHeaders.Get("X-StopLight-Api")
-	var api models.Api
+	identifier := br.ReqHeaders.Get("X-StopLight-Project")
+	var project models.Project
 
 	if identifier == "" {
 		env := br.GetEnvironment()
-		identifier = env.ApiId
+		identifier = env.ProjectId
 	}
 
 	if identifier != "" {
 		existing, ok := cache.Get(identifier)
 		if ok == true {
-			api = existing.(models.Api)
+			project = existing.(models.Project)
 		} else {
-			result := br.dbConnection.Where("id = ?", identifier, true).First(&api)
+			result := br.dbConnection.Where("id = ?", identifier, true).First(&project)
 
-			cache.Add(identifier, api)
+			cache.Add(identifier, project)
 			if result.Error != nil {
 				// TODO: Inform the user somehow..
-				// log.Println("Could not find api.")
+				// log.Println("Could not find project.")
 			}
 		}
 	}
 
-	return &api
+	return &project
 }
 
 func (br *BaseRequest) GetEnvironment() *models.Environment {

@@ -150,20 +150,20 @@ func SaveStopLightRequest(resp *http.Response, ctx *goproxy.ProxyCtx) *http.Resp
 
 		go func() {
 			user := baseRequest.GetUser()
-			var api *models.Api
+			var project *models.Project
 			var env *models.Environment
 
-			// This header indicates wether or not we are saving api/env context with this request.
+			// This header indicates wether or not we are saving project/env context with this request.
 			if noContext == "true" {
-				api = &models.Api{}
+				project = &models.Project{}
 				env = &models.Environment{}
 			} else {
-				api = baseRequest.GetApi()
+				project = baseRequest.GetProject()
 				env = baseRequest.GetEnvironment()
 			}
 
 			// save the request
-			slrequest := models.NewRequest(user, api, env, baseRequest.HttpRequest, baseRequest.GetBody(), resp, respBody)
+			slrequest := models.NewRequest(user, project, env, baseRequest.HttpRequest, baseRequest.GetBody(), resp, respBody)
 			result := dbConnection.Create(slrequest)
 			if result.Error != nil {
 				log.Println(result.Error)
@@ -185,7 +185,7 @@ func SaveStopLightRequest(resp *http.Response, ctx *goproxy.ProxyCtx) *http.Resp
 func Cleanup(resp *http.Response, ctx *goproxy.ProxyCtx) *http.Response {
 	// Clean the stoplight headers
 	ctx.Req.Header.Del("X-StopLight-Dashboard")
-	ctx.Req.Header.Del("X-StopLight-Api")
+	ctx.Req.Header.Del("X-StopLight-Project")
 	ctx.Req.Header.Del("X-StopLight-Url-Host")
 	ctx.Req.Header.Del("X-StopLight-No-Context")
 	ctx.Req.Header.Del("X-StopLight-Authorization")
@@ -226,10 +226,10 @@ func isValidResponse(baseRequest *request.BaseRequest, resp *http.Response) (val
 	}
 
 	isStopLightRequest := baseRequest.HttpRequest.Header.Get("X-StopLight-Dashboard")
-	api := baseRequest.GetApi()
+	project := baseRequest.GetProject()
 	if isStopLightRequest == "true" { // always save requests from the stoplight dashboard
 		valid = true
-	} else if api.Id != "" { // if we've identified an API this request belongs to, let's see if its a valid request
+	} else if project.Id != "" { // if we've identified an API this request belongs to, let's see if its a valid request
 		if resp == nil { // nil response usually means 500
 			valid = true
 		} else {
