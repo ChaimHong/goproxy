@@ -5,29 +5,39 @@ import (
 	"io/ioutil"
 	"log"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/marbemac/goproxy"
 	"github.com/marbemac/goproxy/request"
 
-	"github.com/marbemac/stoplight/core/db"
-	"github.com/marbemac/stoplight/core/models"
-	"github.com/marbemac/stoplight/core/sockets"
+	"github.com/marbemac/stoplight/models"
+	"github.com/marbemac/stoplight/sockets"
 
 	"github.com/jinzhu/gorm"
 )
 
-const allowedCorsMethods = "GET,POST,PUT,PATCH,DELETE,COPY,HEAD,OPTIONS,LINK,UNLINK,PURGE,LOCK,UNLOCK,PROPFIND"
-
-var (
-	requestData  = make(map[int64]*request.BaseRequest)
-	dbConnection *gorm.DB
-	p            *goproxy.ProxyHttpServer
+const (
+	LocalProxyType     = "local"
+	allowedCorsMethods = "GET,POST,PUT,PATCH,DELETE,COPY,HEAD,OPTIONS,LINK,UNLINK,PURGE,LOCK,UNLOCK,PROPFIND"
 )
 
-func InitProxyDB(dbType string, verbose bool) {
-	dbConnection = db.New(dbType, verbose)
+type proxyHelper struct {
+	location     string // local or hosted
+	requestData  map[int64]*request.BaseRequest
+	dbConnection *gorm.DB
+	sh           *sockets.Hub
+}
+
+func NewProxyHelper(db *gorm.DB, sh *sockets.Hub, location string) *proxyHelper {
+	return &proxyHelper{
+		location:     location,
+		requestData:  make(map[int64]*request.BaseRequest),
+		dbConnection: db,
+		sh:           sh,
+	}
 }
 
 ///////////////////
@@ -35,16 +45,22 @@ func InitProxyDB(dbType string, verbose bool) {
 ///////////////////
 
 // Inits and sets the request object for later use
-func SetupRequest(r *http.Request, ctx *goproxy.ProxyCtx) (*http.Request, *http.Response) {
-	baseReq := request.NewBaseRequest(r, ctx.Session)
-	baseReq.SetDb(dbConnection)
-
-	requestData[ctx.Session] = baseReq
-
+func (p *proxyHelper) StaticForwardTest(r *http.Request, ctx *goproxy.ProxyCtx) (*http.Request, *http.Response) {
+	// u, _ := url.Parse("http://127.0.0.1:3000")
+	u, _ := url.Parse("https://api.github.com/repos/marbemac/dayjot")
+	r.URL = u
 	return r, nil
 }
 
-func PreflightCorsSupport(r *http.Request, ctx *goproxy.ProxyCtx) (*http.Request, *http.Response) {
+// Inits and sets the request object for later use
+func (p *proxyHelper) SetupRequest(r *http.Request, ctx *goproxy.ProxyCtx) (*http.Request, *http.Response) {
+	baseReq := request.NewBaseRequest(r, ctx.Session)
+	baseReq.SetDb(p.dbConnection)
+	p.requestData[ctx.Session] = baseReq
+	return r, nil
+}
+
+func (p *proxyHelper) PreflightCorsSupport(r *http.Request, ctx *goproxy.ProxyCtx) (*http.Request, *http.Response) {
 	// If it's an options request, return right away
 	if r.Method == "OPTIONS" {
 		resp := goproxy.NewResponse(r, goproxy.ContentTypeText, http.StatusOK, "")
@@ -54,10 +70,10 @@ func PreflightCorsSupport(r *http.Request, ctx *goproxy.ProxyCtx) (*http.Request
 		resp.Header.Set("Access-Control-Allow-Origin", "*")
 		resp.Header.Set("Access-Control-Expose-Headers", "Content-Length")
 
-		requestData[ctx.Session].Skip = true
+		p.requestData[ctx.Session].Skip = true
 
 		return r, resp
-	} else if requestData[ctx.Session].GetEnvironment().Slug == "" { // no environment? just pass it on
+	} else if p.requestData[ctx.Session].GetEnvironment().Slug == "" { // no environment? just pass it on
 		return r, nil
 	} else { // set request headers
 		r.Header.Set("Access-Control-Allow-Credentials", "true")
@@ -70,11 +86,11 @@ func PreflightCorsSupport(r *http.Request, ctx *goproxy.ProxyCtx) (*http.Request
 	}
 }
 
-func CleanRequest(r *http.Request, ctx *goproxy.ProxyCtx) (*http.Request, *http.Response) {
-	env := requestData[ctx.Session].GetEnvironment()
+func (p *proxyHelper) CleanRequest(r *http.Request, ctx *goproxy.ProxyCtx) (*http.Request, *http.Response) {
+	env := p.requestData[ctx.Session].GetEnvironment()
 
 	// Clean URL
-	u := requestData[ctx.Session].GetOrigin()
+	u := p.requestData[ctx.Session].GetOrigin()
 	r.RequestURI = ""
 	r.URL.Scheme = u.Scheme
 	r.URL.Host = u.Host
@@ -84,9 +100,9 @@ func CleanRequest(r *http.Request, ctx *goproxy.ProxyCtx) (*http.Request, *http.
 	return r, nil
 }
 
-func PostflightCorsSupport(resp *http.Response, ctx *goproxy.ProxyCtx) *http.Response {
+func (p *proxyHelper) PostflightCorsSupport(resp *http.Response, ctx *goproxy.ProxyCtx) *http.Response {
 	// Skip if no environment found, or no response
-	data := requestData[ctx.Session]
+	data := p.requestData[ctx.Session]
 	if resp == nil || data == nil || data.GetEnvironment().Slug == "" {
 		return resp
 	}
@@ -98,8 +114,8 @@ func PostflightCorsSupport(resp *http.Response, ctx *goproxy.ProxyCtx) *http.Res
 	return resp
 }
 
-func SetupResponse(resp *http.Response, ctx *goproxy.ProxyCtx) *http.Response {
-	data := requestData[ctx.Session]
+func (p *proxyHelper) SetupResponse(resp *http.Response, ctx *goproxy.ProxyCtx) *http.Response {
+	data := p.requestData[ctx.Session]
 	if resp == nil || data == nil || data.Skip {
 		return resp
 	}
@@ -119,8 +135,8 @@ func SetupResponse(resp *http.Response, ctx *goproxy.ProxyCtx) *http.Response {
 	return resp
 }
 
-func SaveStopLightRequest(resp *http.Response, ctx *goproxy.ProxyCtx) *http.Response {
-	baseRequest := requestData[ctx.Session]
+func (p *proxyHelper) SaveStopLightRequest(resp *http.Response, ctx *goproxy.ProxyCtx) *http.Response {
+	baseRequest := p.requestData[ctx.Session]
 	valid := isValidResponse(baseRequest, resp)
 
 	if valid {
@@ -163,18 +179,43 @@ func SaveStopLightRequest(resp *http.Response, ctx *goproxy.ProxyCtx) *http.Resp
 			}
 
 			// save the request
-			slrequest := models.NewRequest(user, project, env, baseRequest.HttpRequest, baseRequest.GetBody(), resp, respBody)
-			result := dbConnection.Create(slrequest)
+			d, _ := time.ParseDuration("1s")
+			slrequest := models.NewRequest(user, project, env, baseRequest.HttpRequest, baseRequest.GetBody(), resp, respBody, d, isDashboardRequest)
+			result := p.dbConnection.Create(slrequest)
 			if result.Error != nil {
 				log.Println(result.Error)
 				return
 			}
 
+			// update the project
+			// if project.Id != "" {
+			// 	projectUpdateParams := "request_count=request_count+1"
+
+			// 	if isDashboardRequest { // Track that the user has made a dashboard request for this project
+			// 		updated := project.AddFeature("dashboard_request")
+			// 		if updated {
+			// 			projectUpdateParams += ", features_used='" + project.FeaturesUsed + "'"
+			// 		}
+
+			// 	} else { // Track that the user has made a proxy request for this project
+			// 		updated := project.AddFeature("proxy_request")
+			// 		if updated {
+			// 			projectUpdateParams += ", features_used='" + project.FeaturesUsed + "'"
+			// 		}
+			// 	}
+			// 	p.dbConnection.Exec("UPDATE projects SET "+projectUpdateParams+" WHERE id=?", project.Id)
+			// }
+
+			// update the environment
+			// if env.Id != "" {
+			// 	envUpdateParams := "request_count=request_count+1"
+			// 	p.dbConnection.Exec("UPDATE environments SET "+envUpdateParams+" WHERE id=?", env.Id)
+			// }
+
 			// send the data down to the client
-			sockets.WebSocketHub.BroadcastEvent("request.create", &models.RequestSocketPayload{
-				Model:         "request",
-				Data:          slrequest,
-				FromDashboard: isDashboardRequest,
+			p.sh.BroadcastEvent("request.create", &models.RequestSocketPayload{
+				Model: "request",
+				Data:  slrequest,
 			})
 		}()
 	}
@@ -182,7 +223,7 @@ func SaveStopLightRequest(resp *http.Response, ctx *goproxy.ProxyCtx) *http.Resp
 	return resp
 }
 
-func Cleanup(resp *http.Response, ctx *goproxy.ProxyCtx) *http.Response {
+func (p *proxyHelper) Cleanup(resp *http.Response, ctx *goproxy.ProxyCtx) *http.Response {
 	// Clean the stoplight headers
 	ctx.Req.Header.Del("X-StopLight-Dashboard")
 	ctx.Req.Header.Del("X-StopLight-Project")
@@ -191,7 +232,7 @@ func Cleanup(resp *http.Response, ctx *goproxy.ProxyCtx) *http.Response {
 	ctx.Req.Header.Del("X-StopLight-Authorization")
 
 	// Clean up the session data
-	delete(requestData, ctx.Session)
+	delete(p.requestData, ctx.Session)
 
 	return resp
 }

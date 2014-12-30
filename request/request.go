@@ -13,9 +13,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/marbemac/stoplight/core/models"
-	"github.com/marbemac/stoplight/core/netutils"
-	"github.com/marbemac/stoplight/core/routers"
+	"github.com/mailgun/vulcan/netutils"
+	"github.com/marbemac/stoplight/models"
+	"github.com/marbemac/stoplight/router"
 
 	"github.com/hashicorp/golang-lru"
 	"github.com/jinzhu/gorm"
@@ -186,7 +186,7 @@ func (br *BaseRequest) SetDb(db *gorm.DB) {
 
 func (br *BaseRequest) GetOrigin() (u *url.URL) {
 	// First check the header
-	targetUrl := br.ReqHeaders.Get("X-StopLight-Url-Host")
+	targetUrl := br.ReqHeaders.Get("X-Forwarded-Host")
 	if targetUrl == "" {
 		// else check the environment
 		env := br.GetEnvironment()
@@ -200,6 +200,8 @@ func (br *BaseRequest) GetOrigin() (u *url.URL) {
 		} else {
 			targetUrl = "http://" + env.Url
 		}
+	} else {
+		targetUrl = br.ReqHeaders.Get("X-Forwarded-Proto") + "://" + targetUrl
 	}
 
 	u, _ = url.Parse(targetUrl)
@@ -211,7 +213,7 @@ func (br *BaseRequest) GetOrigin() (u *url.URL) {
 func (br *BaseRequest) GetUser() *models.User {
 	if br.user == nil {
 		header := br.ReqHeaders.Get("X-StopLight-Authorization")
-		br.user = routers.CurrentUser(header, br.dbConnection)
+		br.user = router.CurrentUser(header, br.dbConnection)
 	}
 
 	return br.user
